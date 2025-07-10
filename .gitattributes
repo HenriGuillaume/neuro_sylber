@@ -1,0 +1,3 @@
+pickled_podcast/outputs.pkl filter=lfs diff=lfs merge=lfs -text
+pickled_podcast/samples/*.wav filter=lfs diff=lfs merge=lfs -text
+preds/*.npy filter=lfs diff=lfs merge=lfs -text
