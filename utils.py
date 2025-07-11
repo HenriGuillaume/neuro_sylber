@@ -94,11 +94,12 @@ def stepwise_resample(data, target_len):
 def split_data(sub_num, train_ratio=0.5, hidden_states=None, target_freq=256):
     sub = Subject(sub_num)
     raw = mne.io.read_raw_fif(sub.hg_path)
-    raw.resample(target_freq)
 
     hg_data = raw.get_data().T.astype(np.float32)
     num_samples = hg_data.shape[0]
-    hidden_states = stepwise_resample(hidden_states, num_samples).astype(np.float32)
+    if target_freq is not None:
+        raw.resample(target_freq)
+        hidden_states = stepwise_resample(hidden_states, num_samples).astype(np.float32)
 
     assert num_samples == hidden_states.shape[0], 'Shape mismatch'
     split_idx = int(train_ratio * num_samples)
