@@ -32,6 +32,7 @@ class Subject:
         # info about electrodes
         self.channels_log = os.path.join(ecogqc_dir, self.sub_name, 
         'mark_channels.log')
+        
 
 
 class SplitDataset:
@@ -91,24 +92,58 @@ def stepwise_resample(data, target_len):
     return data[idx]
 
 
-def split_data(sub_num, train_ratio=0.5, hidden_states=None, target_freq=256):
+def average_pool(high_rate_signal, target_len):
+    high_T, channels = high_rate_signal.shape
+    stride = high_T // target_len
+
+    # Truncate the signal to match an exact multiple
+    truncated_len = target_len * stride
+    x = high_rate_signal[:truncated_len, :]
+
+    # Reshape
+    x = x.reshape(target_len, stride, channels)
+
+    # average over stride dimension
+    x = x.mean(axis=1)
+
+    return x
+
+
+def split_data(sub_num,
+               y,
+               train_ratio=0.5,
+               match_y=True,
+               match_x_func=stepwise_resample,
+               match_y_func=average_pool,
+               mode='hg'):
+    '''
+    Match input features (ECoG) sr to output features (hidden_states) sr
+    or the inverse, then split according to ratio
+    '''
     sub = Subject(sub_num)
-    raw = mne.io.read_raw_fif(sub.hg_path)
+    if mode == 'hg':
+        raw = mne.io.read_raw_fif(sub.hg_path)
+    else:
+        raw = mne.io.read_raw_fif(sub.clean_path)
 
-    hg_data = raw.get_data().T.astype(np.float32)
-    num_samples = hg_data.shape[0]
-    if target_freq is not None:
-        raw.resample(target_freq)
-        hidden_states = stepwise_resample(hidden_states, num_samples).astype(np.float32)
+    X = raw.get_data().T #.astype(np.float32)
+    if match_y == False:
+        num_samples = X.shape[0]
+        # match x to y (upsample sylber features)
+        y = match_x_func(y, num_samples) #.astype(np.float32)
+    else:
+        # match y to x (bin ECoG features)
+        num_samples = y.shape[0]
+        X = match_y_func(X, num_samples)
 
-    assert num_samples == hidden_states.shape[0], 'Shape mismatch'
+    assert num_samples == y.shape[0], 'Shape mismatch'
     split_idx = int(train_ratio * num_samples)
 
     return SplitDataset(
-        train_X=hg_data[:split_idx],
-        test_X=hg_data[split_idx:],
-        train_y=hidden_states[:split_idx],
-        test_y=hidden_states[split_idx:]
+        train_X=X[:split_idx],
+        test_X=X[split_idx:],
+        train_y=y[:split_idx],
+        test_y=y[split_idx:]
     )
 
 def open_pickle(pth):
