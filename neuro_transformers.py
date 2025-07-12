@@ -14,92 +14,123 @@ class ECoGFrontend(nn.Module):
         self,
         n_electrodes,
         hidden_size,
-        n_branches=3,
-        kernel_size=32,
-        stride=1,
+        n_layers=3,
+        kernel_size=9,
         dropout_p=0.5
     ):
         super().__init__()
-        branch_hidden = hidden_size // n_branches
+        layers = []
+        in_channels = n_electrodes
 
-        self.convs = nn.ModuleList([
-            nn.Conv1d(
-                in_channels=n_electrodes,
-                out_channels=branch_hidden,
+        for i in range(n_layers):
+            layers.append(nn.Conv1d(
+                in_channels=in_channels,
+                out_channels=hidden_size,
                 kernel_size=kernel_size,
-                stride=stride,
+                stride=1,
                 padding='same'
-            ) for _ in range(n_branches)
-        ])
+            ))
+            layers.append(nn.GELU())
+            layers.append(nn.BatchNorm1d(hidden_size))
+            layers.append(nn.Dropout(dropout_p))
+            in_channels = hidden_size
 
-        self.layer_norm = nn.LayerNorm(hidden_size)
-        self.dropout = nn.Dropout(dropout_p)
+        self.conv_stack = nn.Sequential(*layers)
 
     def forward(self, x):  # x: [batch, frames, electrodes]
         x = x.transpose(1, 2)  # [batch, electrodes, frames]
-        feats = [conv(x).transpose(1, 2) for conv in self.convs]  # each: [batch, new_frames, branch_hidden]
-        x = torch.cat(feats, dim=-1)  #  [batch, new_frames, hidden_size]
-        x = self.layer_norm(x)
-        return self.dropout(x)
+        x = self.conv_stack(x)  # [batch, hidden, frames]
+        return x.transpose(1, 2)  # [batch, frames, hidden]
+
+
+class ShallowHubert(nn.Module):
+    def __init__(self, hidden_size=768, num_layers=2, n_heads=12, dropout=0.5):
+        super().__init__()
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_size,
+            nhead=n_heads,
+            dim_feedforward=hidden_size * 4,
+            dropout=dropout,
+            activation='gelu',
+            batch_first=True
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.layer_norm = nn.LayerNorm(hidden_size)
+
+    def forward(self, x, attention_mask=None):  # [B, T, D]
+        if attention_mask is not None:
+            # Convert to bool mask for TransformerEncoder
+            key_padding_mask = ~attention_mask.bool()
+        else:
+            key_padding_mask = None
+
+        x = self.transformer(x, src_key_padding_mask=key_padding_mask)
+        return self.layer_norm(x)
 
 
 class ECoGHuBERT(nn.Module):
     def __init__(
         self,
         n_electrodes,
+        speech_upstream="facebook/hubert-base-ls960",
+        sylber_ckpt="/home/bigh/prog/sylber/weights/sylber.ckpt",
         hidden_size=768,
         output_size=768,
         max_frames=16000,
-        kernel_size=10, # one 5th of a second at 50Tok/s
-        stride=1,
-        n_branches=16
+        kernel_size=10,
+        n_conv_layers=3,
+        num_last_layers=2, # number of deep layers we keep
+        freeze=[-1], # freeze pretrained model
+        device='cuda'
     ):
         super().__init__()
-        self.stride = stride
-
-        self.config = HubertConfig(
-            hidden_size=hidden_size,
-            num_hidden_layers=12,
-            num_attention_heads=12,  # 12 to match hidden size (768) with 64-dim heads
-            intermediate_size=2 * hidden_size,
-            hidden_dropout=0.5,
-            attention_probs_dropout_prob=0.5,
-            max_position_embeddings=max_frames,
-            vocab_size=output_size
-        )
 
         self.frontend = ECoGFrontend(
             n_electrodes=n_electrodes,
             hidden_size=hidden_size,
-            n_branches=n_branches,
+            n_layers=n_conv_layers,
             kernel_size=kernel_size,
-            stride=stride,
-            dropout_p=0.5
+            dropout_p=0.3
         )
 
-        # Feature projection layer (like BERT)
-        self.feature_projection = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size),
-            nn.LayerNorm(hidden_size),
-            nn.Dropout(0.1)
-        )
-
+        self.config = HubertConfig.from_pretrained(speech_upstream)
         self.encoder = HubertModel(self.config).encoder
+        try:
+            state_dict = torch.load(sylber_ckpt, map_location='cpu')
+            self.encoder.load_state_dict(state_dict, strict=False)
+            print("Loaded Sylber HuBERT weights")
+        except Exception as e:
+            print(f"Failed to load Sylber weights: {e}")
+            exit()
+        
+
+        self.truncated_encoder = nn.ModuleList(list(self.encoder.layers)[-4:])
+
+        if freeze:
+            for i in freeze:
+                for param in self.truncated_encoder[i].parameters():
+                    param.requires_grad = False
+
         self.pos_emb = nn.Parameter(torch.zeros(1, max_frames, hidden_size))
-        self.layer_norm = nn.LayerNorm(hidden_size)
-        self.projector = nn.Linear(hidden_size, output_size)
 
-    def forward(self, x, attention_mask=None):
-        x = self.frontend(x)  # [batch, frames', hidden]
-        x = x + self.pos_emb[:, :x.size(1), :]  # positional embedding
+        # Add shallow transformer to adapt ECoG to HuBERT space
+        self.shallow = ShallowHubert(
+            hidden_size=hidden_size,
+            num_layers=2,
+            n_heads=12,
+            dropout=0.5
+        )
 
-        x = self.feature_projection(x)  # project
+    def forward(self, x, attention_mask=None):  # x: [B, T, electrodes]
+        x = self.frontend(x)  # [B, T, hidden_size]
+        x = x + self.pos_emb[:, :x.size(1), :]
 
-        x = self.encoder(x, attention_mask=attention_mask).last_hidden_state
-        x = self.layer_norm(x)
-        y = self.projector(x)  # [batch, frames', output_size]
+        x = self.shallow(x, attention_mask=attention_mask)
 
-        return y
+        for layer in self.truncated_encoder:
+            x = layer(x, attention_mask=attention_mask)[0]
+
+        return x
 
 
 def chunk_data(X, y, chunk_len, stride=None):
@@ -120,11 +151,13 @@ def chunk_data(X, y, chunk_len, stride=None):
 
 def train_ecoghubert(sub_num,
                     hidden_states,
+                    model=None,
                     mode='hg',
-                    train_ratio=0.05,
+                    train_ratio=0.5,
                     n_epochs=10,
                     batch_size=16,
                     lr=1e-4,
+                    chunk_len=100,
                     save_folder="checkpoints"):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -135,7 +168,6 @@ def train_ecoghubert(sub_num,
                          train_ratio=train_ratio,
                          mode=mode) # we match ECoG data to sylber token frequency
     # add batch dimension
-    chunk_len = 100 # 2second chunks at 50Hz
     stride = chunk_len // 2
     
     train_X_chunks, train_y_chunks = chunk_data(
@@ -148,13 +180,17 @@ def train_ecoghubert(sub_num,
     train_y = train_y_chunks # [B, frames, sylber_dim]
     print(f'train_X: {train_X.shape}\n train_y: {train_y.shape}\n')
     # define model
-    model = ECoGHuBERT(n_electrodes=train_X.shape[2], output_size=train_y.shape[2], stride=1)
+    if model is None:
+        model = ECoGHuBERT(n_electrodes=train_X.shape[2],
+                            output_size=train_y.shape[2])
     model = model.to(device)
     
 
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
-    criterion = nn.MSELoss()
+    
+    criterion = nn.CosineSimilarity(dim=2, eps=1e-6)
+    #criterion = nn.MSELoss()
 
     train_loader = DataLoader(TensorDataset(train_X_chunks, train_y_chunks),
                               batch_size=batch_size,
@@ -175,6 +211,7 @@ def train_ecoghubert(sub_num,
             optimizer.zero_grad()
             output = model(batch_X)
             loss = criterion(output, batch_y)
+            loss = -loss.mean() # for cosine similarity
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
@@ -200,7 +237,7 @@ def train_ecoghubert(sub_num,
     plt.figure()
     plt.plot(losses, label="Training Loss")
     plt.xlabel("Epoch")
-    plt.ylabel("MSE Loss")
+    plt.ylabel("Negative Cosine Loss")
     plt.title("Training Loss Curve")
     plt.legend()
     plt.grid(True)
@@ -239,6 +276,7 @@ def ecoghubert_predict(model: ECoGHuBERT, test_X, test_y, chunk_len=100, batch_s
             torch.cuda.empty_cache()
 
     preds = torch.cat(preds, dim=0)  # [num_chunks, chunk_len, output_dim]
+    preds = preds.reshape(-1, preds.shape[-1])
     return preds
 
 
@@ -255,9 +293,10 @@ if __name__ == "__main__":
     output_folder = "checkpoints"
 
     model, (test_X, test_y) = train_ecoghubert(sub_num=subject_number,
-                                                save_folder=output_folder,
-                                                hidden_states=HIDDEN_STATES,
-                                                n_epochs=2)
+                                               train_ratio=0.8,
+                                               save_folder=output_folder,
+                                               hidden_states=HIDDEN_STATES,
+                                               n_epochs=100)
 
     
 
@@ -265,7 +304,7 @@ if __name__ == "__main__":
     test_y_np = test_y.cpu().numpy()
 
     np.save(os.path.join(output_folder, f"model_predictions_subject_{subject_number}.npy"),
-            {'y_pred': predictions_np, 'y_true': test_y_np})
+            predictions_np)
     print(f"Predictions and ground truth saved to model_predictions_subject_{subject_number}.npy")
 
 
