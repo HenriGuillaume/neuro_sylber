@@ -15,7 +15,7 @@ class ECoGFrontend(nn.Module):
         self,
         n_electrodes: int,
         hidden_size: int,
-        kernel_sizes=(3, 5, 7),
+        kernel_sizes=(1, 5, 10),
         n_filters_per_branch=32,
         dropout_p=0.5
     ):
@@ -30,7 +30,7 @@ class ECoGFrontend(nn.Module):
                         out_channels=n_filters_per_branch,
                         kernel_size=k,
                         stride=1,
-                        padding=k // 2  # "same" padding for odd kernel sizes
+                        padding=k // 2
                     ),
                     nn.GELU(),
                     nn.BatchNorm1d(n_filters_per_branch),
@@ -38,18 +38,14 @@ class ECoGFrontend(nn.Module):
                 )
             )
 
-        total_out_channels = n_filters_per_branch * len(kernel_sizes)
-        self.projection = nn.Linear(total_out_channels, hidden_size)
+        total_filters = n_filters_per_branch * len(kernel_sizes)
+        self.projection = nn.Conv1d(total_filters, hidden_size, kernel_size=1)
 
-    def forward(self, x):  # x: [batch, frames, electrodes]
-        x = x.transpose(1, 2)  # [batch, electrodes, frames]
-
-        branch_outputs = [branch(x) for branch in self.branches]
-        x_cat = torch.cat(branch_outputs, dim=1)  # [batch, total_filters, frames]
-
-        x_cat = x_cat.transpose(1, 2)  # [batch, frames, total_filters]
-        out = self.projection(x_cat)   # [batch, frames, hidden_size]
-        return out
+    def forward(self, x):  # x: [B, T, E]
+        x = x.transpose(1, 2)  # [B, E, T]
+        x_cat = torch.cat([branch(x) for branch in self.branches], dim=1)  # [B, F, T]
+        x_proj = self.projection(x_cat)  # [B, H, T]
+        return x_proj.transpose(1, 2)  # [B, T, H]
 
 
 class ShallowHubert(nn.Module):
@@ -123,7 +119,7 @@ class ECoGHuBERT(nn.Module):
         # Add shallow transformer to adapt ECoG to HuBERT space
         self.shallow = ShallowHubert(
             hidden_size=hidden_size,
-            num_layers=1,
+            num_layers=2,
             n_heads=12,
             dropout=0.5
         )
