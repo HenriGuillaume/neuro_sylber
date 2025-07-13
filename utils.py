@@ -82,7 +82,7 @@ def average_pool(high_rate_signal, target_len):
 def split_data(sub_num,
                y,
                train_ratio=0.8,
-               val_ratio=0.1,
+               val_ratio=0,
                match_y=True,
                match_x_func=stepwise_resample,
                match_y_func=average_pool,

@@ -11,7 +11,7 @@ from tqdm import tqdm
 from utils import Subject, SplitDataset, split_data, open_pickle, CONFIG
 
 # ECoG dataset
-DS_DIR = CONFIG['dataset']['dataset_dir']
+DS_DIR = CONFIG['data']['dataset_dir']
 ECOGPREP_DIR = os.path.join(DS_DIR, 'derivatives/ecogprep/')
 ECOGGQC_DIR = os.path.join(DS_DIR, 'derivatives/ecogqc/')
 SUB_NAMES = [f'sub-0{i}' for i in range(10)]
@@ -63,7 +63,7 @@ def run_pipeline(sub_num,
                 hidden_states,
                 train_ratio=0.5,
                 tmin=-0.5,
-                tmax=0.5,
+                tmax=0.1,
                 sfreq=256,
                 alpha=1e6,
                 test_ratio=None,
@@ -77,7 +77,7 @@ def run_pipeline(sub_num,
     if pca is not None:
         pca = PCA(n_components=pca)
         HIDDEN_STATES = pca.fit_transform(HIDDEN_STATES)
-    dataset = split_data(sub_num, train_ratio, hidden_states, target_freq=sfreq, mode=mode)
+    dataset = split_data(sub_num, hidden_states, train_ratio, match_y=False, mode=mode)
     trf_model = TRF(tmin, tmax, sfreq, alpha)
     if weights is None:
         trf_model.fit(dataset)
@@ -105,12 +105,22 @@ def run_pipeline(sub_num,
     }
 
 
-def save_outputs(preds, test_y, scores, params, out_dir="trf_outputs"):
-    os.makedirs(out_dir, exist_ok=True)
-    # predictions and targets
-    preds_fname = f"sub-{params['sub_num']:02d}_mode{params['mode']}_preds_r{params['train_ratio']}_min{params['tmin']}_max{params['tmax']}_f{params['sfreq']}.npy"
-    np.save(os.path.join(out_dir, preds_fname), (preds, test_y))
-    print(f"Saved predictions to: {preds_fname}")
+def save_outputs(preds, test_y, scores, params, out_dir="TRF_outputs"):
+    sub_folder = f"sub-{params['sub_num']:02d}"
+    save_path = os.path.join(out_dir, sub_folder)
+    os.makedirs(save_path, exist_ok=True)
+
+    # Save scores
+    if scores is not None:
+        print(f"Average score: {np.mean(scores):.4f}")
+    scores_fname = f"mode{params['mode']}_scores_r{params['train_ratio']}_min{params['tmin']}_max{params['tmax']}_f{params['sfreq']}.npy"
+    np.save(os.path.join(save_path, scores_fname), scores)
+    print(f"Saved scores to: {os.path.join(sub_folder, scores_fname)}")
+
+    # Save predictions and targets
+    preds_fname = f"mode{params['mode']}_preds_r{params['train_ratio']}_min{params['tmin']}_max{params['tmax']}_f{params['sfreq']}.npy"
+    np.save(os.path.join(save_path, preds_fname), (preds, test_y))
+    print(f"Saved predictions to: {os.path.join(sub_folder, preds_fname)}")
 
 
 if __name__ == "__main__":

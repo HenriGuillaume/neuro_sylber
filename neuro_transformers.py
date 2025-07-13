@@ -30,7 +30,7 @@ class ECoGFrontend(nn.Module):
                         out_channels=n_filters_per_branch,
                         kernel_size=k,
                         stride=1,
-                        padding=k // 2
+                        padding='same'
                     ),
                     nn.GELU(),
                     nn.BatchNorm1d(n_filters_per_branch),
@@ -326,31 +326,74 @@ def ecoghubert_predict(model: ECoGHuBERT, test_X, test_y, chunk_len=100, batch_s
     return preds
 
 
+def save_predictions(predictions, targets, subject_number, train_ratio, n_epochs,
+                     chunk_len=None, loss_type=None, out_dir="transformer_outputs"):
+    sub_folder = f"sub-{subject_number:02d}"
+    save_path = os.path.join(out_dir, sub_folder)
+    os.makedirs(save_path, exist_ok=True)
+
+    # Build filename suffix
+    name_parts = [
+        f"r{train_ratio}",
+        f"e{n_epochs}"
+    ]
+    if chunk_len is not None:
+        name_parts.append(f"chunk{chunk_len}")
+    if loss_type is not None:
+        name_parts.append(f"loss-{loss_type.replace('>', '2').replace(':', '-')}")
+    suffix = "_".join(name_parts)
+
+    # Save files
+    preds_fname = f"predictions_{suffix}.npy"
+    gt_fname = f"ground_truth_{suffix}.npy"
+
+    np.save(os.path.join(save_path, preds_fname), predictions)
+    np.save(os.path.join(save_path, gt_fname), targets)
+
+    print(f"Saved predictions to: {os.path.join(sub_folder, preds_fname)}")
+    print(f"Saved ground truth to: {os.path.join(sub_folder, gt_fname)}")
+
+
 if __name__ == "__main__":
     import numpy as np
-    SYLBER_FEAT_DIR = './pickled_podcast/'
-    full_sylber_features = open_pickle(os.path.join(SYLBER_FEAT_DIR,
-    'outputs.pkl'))
+
+    SYLBER_FEAT_DIR = CONFIG['model']['sylber_outputs']
+    full_sylber_features = open_pickle(SYLBER_FEAT_DIR)
 
     HIDDEN_STATES = full_sylber_features['hidden_states']
     del full_sylber_features
 
-    subject_number = 1
-    output_folder = "checkpoints"
+    subject_number = 9
+    output_folder = "transformer_outputs"
+    train_ratio = 0.8
+    n_epochs = 64
+    chunk_len = 100  # 2 seconds at 50Hz
+    loss_type = 'mse->cosine'
 
-    model, (test_X, test_y) = train_ecoghubert(sub_num=subject_number,
-                                               train_ratio=0.8,
-                                               save_folder=output_folder,
-                                               hidden_states=HIDDEN_STATES,
-                                               n_epochs=100)
-
-    
+    model, (test_X, test_y) = train_ecoghubert(
+        sub_num=subject_number,
+        train_ratio=train_ratio,
+        val_ratio=0.1,
+        batch_size=128,
+        save_folder='doodoo',
+        hidden_states=HIDDEN_STATES,
+        chunk_len=chunk_len,
+        max_plateau=False,
+        loss_type=loss_type,
+        loss_switch_epoch=20,
+        n_epochs=n_epochs
+    )
 
     predictions_np = ecoghubert_predict(model, test_X, test_y).numpy()
     test_y_np = test_y.cpu().numpy()
 
-    np.save(os.path.join(output_folder, f"model_predictions_subject_{subject_number}.npy"),
-            predictions_np)
-    print(f"Predictions and ground truth saved to model_predictions_subject_{subject_number}.npy")
-
-
+    save_predictions(
+        predictions=predictions_np,
+        targets=test_y_np,
+        subject_number=subject_number,
+        train_ratio=train_ratio,
+        n_epochs=n_epochs,
+        chunk_len=chunk_len,
+        loss_type=loss_type,
+        out_dir=output_folder
+    )
