@@ -3,8 +3,6 @@ import re
 import pickle
 import numpy as np
 import mne
-from mne.decoding import ReceptiveField
-from mne.decoding import TimeDelayingRidge
 import yaml
 
 with open("config.yaml", "r") as f:
@@ -56,42 +54,6 @@ class SplitDataset:
             'val_y': self.val_y.shape,
             'test_y': self.test_y.shape
         }
-
-
-
-class TRF:
-    def __init__(self, tmin=-0.2, tmax=1.0, sfreq=256, alpha=1.0, weights=None):
-        self.tmin = tmin
-        self.tmax = tmax
-        self.sfreq = sfreq
-        self.alpha = alpha
-        self.model = ReceptiveField(
-            tmin=tmin,
-            tmax=tmax,
-            sfreq=sfreq,
-            scoring='corrcoef',
-            estimator=TimeDelayingRidge(tmin, tmax, sfreq, reg_type="ridge", alpha=alpha),
-            n_jobs='cuda'
-        )
-        if weights is not None:
-            self.load(weights)
-
-    def fit(self, dataset: SplitDataset):
-        self.model.fit(dataset.train_X, dataset.train_y)
-
-    def predict(self, X):
-        return self.model.predict(X)
-
-    def score(self, dataset: SplitDataset):
-        return self.model.score(dataset.test_X, dataset.test_y)
-    
-    def save(self, path):
-        with open(path, 'wb') as f:
-            pickle.dump(self.model, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-    def load(self, path):
-        with open(path, 'rb') as f:
-            self.model = pickle.load(f)
 
 
 def stepwise_resample(data, target_len):
