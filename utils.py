@@ -5,9 +5,13 @@ import numpy as np
 import mne
 from mne.decoding import ReceptiveField
 from mne.decoding import TimeDelayingRidge
+import yaml
+
+with open("config.yaml", "r") as f:
+    CONFIG = yaml.safe_load(f)
 
 
-DS_DIR = './ds005574-1.0.2/'
+DS_DIR = CONFIG['data']['dataset_dir']
 ECOGPREP_DIR = os.path.join(DS_DIR, 'derivatives/ecogprep/')
 ECOGGQC_DIR = os.path.join(DS_DIR, 'derivatives/ecogqc/')
 

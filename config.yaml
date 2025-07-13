@@ -1,0 +1,7 @@
+data:
+  dataset_dir: "ds005574-1.0.2"
+
+model:
+  sylber_dir: "../sylber"
+  sylber_checkpoint: "../sylber/weights/sylber.ckpt"
+  base_model: "facebook/hubert-base-ls960"

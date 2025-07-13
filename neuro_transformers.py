@@ -3,44 +3,53 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from transformers import HubertConfig, HubertModel
-from utils import SplitDataset, split_data, open_pickle
+from utils import CONFIG, SplitDataset, split_data, open_pickle
 import os
 from matplotlib import pyplot as plt
 from tqdm import tqdm
 
 
+
 class ECoGFrontend(nn.Module):
     def __init__(
         self,
-        n_electrodes,
-        hidden_size,
-        n_layers=3,
-        kernel_size=9,
+        n_electrodes: int,
+        hidden_size: int,
+        kernel_sizes=(3, 5, 7),
+        n_filters_per_branch=32,
         dropout_p=0.5
     ):
         super().__init__()
-        layers = []
-        in_channels = n_electrodes
 
-        for i in range(n_layers):
-            layers.append(nn.Conv1d(
-                in_channels=in_channels,
-                out_channels=hidden_size,
-                kernel_size=kernel_size,
-                stride=1,
-                padding='same'
-            ))
-            layers.append(nn.GELU())
-            layers.append(nn.BatchNorm1d(hidden_size))
-            layers.append(nn.Dropout(dropout_p))
-            in_channels = hidden_size
+        self.branches = nn.ModuleList()
+        for k in kernel_sizes:
+            self.branches.append(
+                nn.Sequential(
+                    nn.Conv1d(
+                        in_channels=n_electrodes,
+                        out_channels=n_filters_per_branch,
+                        kernel_size=k,
+                        stride=1,
+                        padding=k // 2  # "same" padding for odd kernel sizes
+                    ),
+                    nn.GELU(),
+                    nn.BatchNorm1d(n_filters_per_branch),
+                    nn.Dropout(dropout_p)
+                )
+            )
 
-        self.conv_stack = nn.Sequential(*layers)
+        total_out_channels = n_filters_per_branch * len(kernel_sizes)
+        self.projection = nn.Linear(total_out_channels, hidden_size)
 
     def forward(self, x):  # x: [batch, frames, electrodes]
         x = x.transpose(1, 2)  # [batch, electrodes, frames]
-        x = self.conv_stack(x)  # [batch, hidden, frames]
-        return x.transpose(1, 2)  # [batch, frames, hidden]
+
+        branch_outputs = [branch(x) for branch in self.branches]
+        x_cat = torch.cat(branch_outputs, dim=1)  # [batch, total_filters, frames]
+
+        x_cat = x_cat.transpose(1, 2)  # [batch, frames, total_filters]
+        out = self.projection(x_cat)   # [batch, frames, hidden_size]
+        return out
 
 
 class ShallowHubert(nn.Module):
@@ -72,8 +81,8 @@ class ECoGHuBERT(nn.Module):
     def __init__(
         self,
         n_electrodes,
-        speech_upstream="facebook/hubert-base-ls960",
-        sylber_ckpt="/home/bigh/prog/sylber/weights/sylber.ckpt",
+        speech_upstream=CONFIG['model']['base_model'],
+        sylber_ckpt=CONFIG['model']['sylber_checkpoint'],
         hidden_size=768,
         output_size=768,
         max_frames=16000,
@@ -88,9 +97,7 @@ class ECoGHuBERT(nn.Module):
         self.frontend = ECoGFrontend(
             n_electrodes=n_electrodes,
             hidden_size=hidden_size,
-            n_layers=n_conv_layers,
-            kernel_size=kernel_size,
-            dropout_p=0.3
+            dropout_p=0.5
         )
 
         self.config = HubertConfig.from_pretrained(speech_upstream)
@@ -116,7 +123,7 @@ class ECoGHuBERT(nn.Module):
         # Add shallow transformer to adapt ECoG to HuBERT space
         self.shallow = ShallowHubert(
             hidden_size=hidden_size,
-            num_layers=2,
+            num_layers=1,
             n_heads=12,
             dropout=0.5
         )
@@ -148,19 +155,22 @@ def chunk_data(X, y, chunk_len, stride=None):
 
     return torch.stack(chunks_X), torch.stack(chunks_y)
 
-
+        
 def train_ecoghubert(sub_num,
-                    hidden_states,
-                    model=None,
-                    mode='hg',
-                    train_ratio=0.5,
-                    val_ratio=0.25,
-                    n_epochs=10,
-                    batch_size=16,
-                    lr=1e-4,
-                    chunk_len=100,
-                    max_plateau=15,
-                    save_folder="checkpoints"):
+                     hidden_states,
+                     model=None,
+                     mode='hg',
+                     train_ratio=0.5,
+                     val_ratio=0.25,
+                     n_epochs=10,
+                     batch_size=16,
+                     lr=1e-4,
+                     chunk_len=100,
+                     max_plateau=15,
+                     save_folder="checkpoints",
+                     loss_type="cosine",            # 'mse', 'cosine', or 'mse->cosine'
+                     loss_switch_epoch=None         # int: epoch to switch from MSE to Cosine
+):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(save_folder, exist_ok=True)
 
@@ -171,6 +181,7 @@ def train_ecoghubert(sub_num,
                          mode=mode)
 
     stride = chunk_len // 2
+
     def to_chunks(X, y):
         return chunk_data(torch.tensor(X).float(), torch.tensor(y).float(), chunk_len=chunk_len, stride=stride)
 
@@ -184,7 +195,9 @@ def train_ecoghubert(sub_num,
 
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
-    criterion = nn.CosineSimilarity(dim=2, eps=1e-6)
+
+    mse_loss_fn = nn.MSELoss()
+    cosine_loss_fn = nn.CosineSimilarity(dim=2, eps=1e-6)
 
     train_loader = DataLoader(TensorDataset(train_X_chunks, train_y_chunks),
                               batch_size=batch_size, shuffle=True, pin_memory=True)
@@ -195,31 +208,47 @@ def train_ecoghubert(sub_num,
     best_val_loss = float('inf')
     plateau_counter = 0
 
+    def compute_loss(output, target, epoch):
+        if loss_type == 'mse':
+            return mse_loss_fn(output, target)
+        elif loss_type == 'cosine':
+            return -cosine_loss_fn(output, target).mean()
+        elif loss_type == 'mse->cosine':
+            if loss_switch_epoch is None:
+                raise ValueError("`loss_switch_epoch` must be set when using 'mse->cosine'")
+            if epoch < loss_switch_epoch:
+                return mse_loss_fn(output, target)
+            else:
+                return -cosine_loss_fn(output, target).mean()
+        else:
+            raise ValueError(f"Unknown loss_type '{loss_type}'")
+
     for epoch in range(n_epochs):
         print(f"Epoch {epoch+1}/{n_epochs}")
         model.train()
         total_loss = 0
+
         for batch_X, batch_y in tqdm(train_loader,
-                                desc="Trainingf Epoch {epoch+1}/{n_epochs}",
-                                leave=False):
+                                     desc=f"Training Epoch {epoch+1}",
+                                     leave=False):
             batch_X, batch_y = batch_X.to(device), batch_y.to(device)
             optimizer.zero_grad()
             output = model(batch_X)
-            loss = -criterion(output, batch_y).mean()
+            loss = compute_loss(output, batch_y, epoch)
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
         avg_train_loss = total_loss / len(train_loader)
         losses.append(avg_train_loss)
 
-        # Validation pass
+        # Validation
         model.eval()
         val_total_loss = 0
         with torch.no_grad():
             for batch_X, batch_y in tqdm(val_loader, desc="Validation", leave=False):
                 batch_X, batch_y = batch_X.to(device), batch_y.to(device)
                 output = model(batch_X)
-                loss = -criterion(output, batch_y).mean()
+                loss = compute_loss(output, batch_y, epoch)
                 val_total_loss += loss.item()
         avg_val_loss = val_total_loss / len(val_loader)
         val_losses.append(avg_val_loss)
@@ -230,17 +259,32 @@ def train_ecoghubert(sub_num,
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             plateau_counter = 0
-            # Save best model
             model_path = os.path.join(save_folder, f"ecoghubert_subject_{sub_num}_best.pt")
             torch.save(model.state_dict(), model_path)
         else:
             plateau_counter += 1
 
-        if plateau_counter >= max_plateau:
+        if plateau_counter >= max_plateau and max_plateau:
             print("Early stopping due to plateau on validation.")
             break
 
         torch.cuda.empty_cache()
+
+    # Save final loss curve
+    plt.figure()
+    plt.plot(losses, label="Train Loss")
+    plt.plot(val_losses, label="Val Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title(f"Loss Curve (subject {sub_num})")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_folder, f"loss_curve_subject_{sub_num}.png"))
+    plt.close()
+
+    return model, (torch.tensor(dataset.test_X).float(), torch.tensor(dataset.test_y).float())
+
 
     # Plot loss
     plt.figure()
