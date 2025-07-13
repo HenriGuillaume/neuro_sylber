@@ -34,21 +34,25 @@ class Subject:
         'mark_channels.log')
         
 
-
 class SplitDataset:
-    def __init__(self, train_X, test_X, train_y, test_y):
+    def __init__(self, train_X, val_X, test_X, train_y, val_y, test_y):
         self.train_X = train_X
+        self.val_X = val_X
         self.test_X = test_X
         self.train_y = train_y
+        self.val_y = val_y
         self.test_y = test_y
 
     def summary(self):
         return {
             'train_X': self.train_X.shape,
+            'val_X': self.val_X.shape,
             'test_X': self.test_X.shape,
             'train_y': self.train_y.shape,
+            'val_y': self.val_y.shape,
             'test_y': self.test_y.shape
         }
+
 
 
 class TRF:
@@ -111,7 +115,8 @@ def average_pool(high_rate_signal, target_len):
 
 def split_data(sub_num,
                y,
-               train_ratio=0.5,
+               train_ratio=0.8,
+               val_ratio=0.1,
                match_y=True,
                match_x_func=stepwise_resample,
                match_y_func=average_pool,
@@ -126,27 +131,31 @@ def split_data(sub_num,
     else:
         raw = mne.io.read_raw_fif(sub.clean_path)
 
-    X = raw.get_data().T #.astype(np.float32)
-    if match_y == False:
+    X = raw.get_data().T
+
+    if not match_y:
         num_samples = X.shape[0]
-        # match x to y (upsample sylber features)
-        y = match_x_func(y, num_samples) #.astype(np.float32)
+        y = match_x_func(y, num_samples)
     else:
-        # match y to x (bin ECoG features)
         num_samples = y.shape[0]
         X = match_y_func(X, num_samples)
 
     assert num_samples == y.shape[0], 'Shape mismatch'
-    split_idx = int(train_ratio * num_samples)
+
+    # Compute split indices
+    train_end = int(train_ratio * num_samples)
+    val_end = train_end + int(val_ratio * num_samples)
 
     return SplitDataset(
-        train_X=X[:split_idx],
-        test_X=X[split_idx:],
-        train_y=y[:split_idx],
-        test_y=y[split_idx:]
+        train_X=X[:train_end],
+        val_X=X[train_end:val_end],
+        test_X=X[val_end:],
+        train_y=y[:train_end],
+        val_y=y[train_end:val_end],
+        test_y=y[val_end:]
     )
 
 def open_pickle(pth):
     with open(pth, 'rb') as handle:
         b = pickle.load(handle)
-    return b    
+    return b

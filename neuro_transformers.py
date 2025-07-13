@@ -154,106 +154,112 @@ def train_ecoghubert(sub_num,
                     model=None,
                     mode='hg',
                     train_ratio=0.5,
+                    val_ratio=0.25,
                     n_epochs=10,
                     batch_size=16,
                     lr=1e-4,
                     chunk_len=100,
+                    max_plateau=15,
                     save_folder="checkpoints"):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     os.makedirs(save_folder, exist_ok=True)
 
     dataset = split_data(sub_num=sub_num,
                          y=hidden_states,
                          train_ratio=train_ratio,
-                         mode=mode) # we match ECoG data to sylber token frequency
-    # add batch dimension
+                         val_ratio=val_ratio,
+                         mode=mode)
+
     stride = chunk_len // 2
-    
-    train_X_chunks, train_y_chunks = chunk_data(
-        torch.tensor(dataset.train_X).float(),
-        torch.tensor(dataset.train_y).float(),
-        chunk_len=chunk_len,
-        stride=stride
-    )
-    train_X = train_X_chunks  # [B, frames, electrodes]
-    train_y = train_y_chunks # [B, frames, sylber_dim]
-    print(f'train_X: {train_X.shape}\n train_y: {train_y.shape}\n')
-    # define model
+    def to_chunks(X, y):
+        return chunk_data(torch.tensor(X).float(), torch.tensor(y).float(), chunk_len=chunk_len, stride=stride)
+
+    train_X_chunks, train_y_chunks = to_chunks(dataset.train_X, dataset.train_y)
+    val_X_chunks, val_y_chunks = to_chunks(dataset.val_X, dataset.val_y)
+
     if model is None:
-        model = ECoGHuBERT(n_electrodes=train_X.shape[2],
-                            output_size=train_y.shape[2])
+        model = ECoGHuBERT(n_electrodes=train_X_chunks.shape[2],
+                           output_size=train_y_chunks.shape[2])
     model = model.to(device)
-    
 
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
-    
     criterion = nn.CosineSimilarity(dim=2, eps=1e-6)
-    #criterion = nn.MSELoss()
 
     train_loader = DataLoader(TensorDataset(train_X_chunks, train_y_chunks),
-                              batch_size=batch_size,
-                              shuffle=True,
-                              pin_memory=True)
+                              batch_size=batch_size, shuffle=True, pin_memory=True)
+    val_loader = DataLoader(TensorDataset(val_X_chunks, val_y_chunks),
+                            batch_size=batch_size, shuffle=False, pin_memory=True)
 
-    model.train()
-    losses = []
-    best_loss = float('inf')
+    losses, val_losses = [], []
+    best_val_loss = float('inf')
     plateau_counter = 0
-    max_plateau = 6
+
     for epoch in range(n_epochs):
         print(f"Epoch {epoch+1}/{n_epochs}")
+        model.train()
         total_loss = 0
-        for batch_X, batch_y in tqdm(train_loader):
-            batch_X = batch_X.to(device, non_blocking=True)
-            batch_y = batch_y.to(device, non_blocking=True)
+        for batch_X, batch_y in tqdm(train_loader,
+                                desc="Trainingf Epoch {epoch+1}/{n_epochs}",
+                                leave=False):
+            batch_X, batch_y = batch_X.to(device), batch_y.to(device)
             optimizer.zero_grad()
             output = model(batch_X)
-            loss = criterion(output, batch_y)
-            loss = -loss.mean() # for cosine similarity
+            loss = -criterion(output, batch_y).mean()
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
+        avg_train_loss = total_loss / len(train_loader)
+        losses.append(avg_train_loss)
 
-        avg_loss = total_loss / len(train_loader)
-        losses.append(avg_loss)
-        print(f"Epoch {epoch+1}/{n_epochs}, Loss: {avg_loss:.4f}")
+        # Validation pass
+        model.eval()
+        val_total_loss = 0
+        with torch.no_grad():
+            for batch_X, batch_y in tqdm(val_loader, desc="Validation", leave=False):
+                batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+                output = model(batch_X)
+                loss = -criterion(output, batch_y).mean()
+                val_total_loss += loss.item()
+        avg_val_loss = val_total_loss / len(val_loader)
+        val_losses.append(avg_val_loss)
 
-        scheduler.step(avg_loss)
+        print(f"Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+        scheduler.step(avg_val_loss)
 
-        if avg_loss < best_loss:
-            best_loss = avg_loss
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
             plateau_counter = 0
+            # Save best model
+            model_path = os.path.join(save_folder, f"ecoghubert_subject_{sub_num}_best.pt")
+            torch.save(model.state_dict(), model_path)
         else:
             plateau_counter += 1
 
         if plateau_counter >= max_plateau:
-            print("Early stopping due to plateau.")
+            print("Early stopping due to plateau on validation.")
             break
+
         torch.cuda.empty_cache()
 
-    # Save loss plot
+    # Plot loss
     plt.figure()
-    plt.plot(losses, label="Training Loss")
+    plt.plot(losses, label="Train Loss")
+    plt.plot(val_losses, label="Validation Loss")
     plt.xlabel("Epoch")
     plt.ylabel("Negative Cosine Loss")
-    plt.title("Training Loss Curve")
+    plt.title("Training and Validation Loss")
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(os.path.join(save_folder, f"loss_curve_subject_{sub_num}.png"))
     plt.close()
 
-    # Save model
-    model_path = os.path.join(save_folder, f"ecoghubert_subject_{sub_num}.pt")
-    torch.save(model.state_dict(), model_path)
-    print(f"Model saved to {model_path}")
-    
+    print(f"Best model saved to {model_path}")
     test_X = torch.tensor(dataset.test_X).float()
     test_y = torch.tensor(dataset.test_y).float()
-
     return model, (test_X, test_y)
+
 
 
 def ecoghubert_predict(model: ECoGHuBERT, test_X, test_y, chunk_len=100, batch_size=8):
