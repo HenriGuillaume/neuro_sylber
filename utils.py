@@ -82,8 +82,9 @@ def average_pool(high_rate_signal, target_len):
 def split_data(sub_num,
                y,
                train_ratio=0.8,
-               val_ratio=0,
-               match_y=True,
+               val_ratio=0.1,
+               match_X=False,
+               match_y=False,
                match_x_func=stepwise_resample,
                match_y_func=average_pool,
                mode='hg'):
@@ -91,7 +92,7 @@ def split_data(sub_num,
     Match input features (ECoG) sr to output features (hidden_states) sr
     or the inverse, then split according to ratio
     '''
-    sub = Subject(sub_num)
+    sub = Subject(sub_num) # maybe put this as a getter of Subject class
     if mode == 'hg':
         raw = mne.io.read_raw_fif(sub.hg_path)
     else:
@@ -99,26 +100,27 @@ def split_data(sub_num,
 
     X = raw.get_data().T
 
-    if not match_y:
-        num_samples = X.shape[0]
+    if match_X:
         y = match_x_func(y, num_samples)
-    else:
-        num_samples = y.shape[0]
+    elif match_y:
         X = match_y_func(X, num_samples)
 
-    assert num_samples == y.shape[0], 'Shape mismatch'
+    num_samples_X = X.shape[0]
+    num_samples_y = y.shape[0]
 
     # Compute split indices
-    train_end = int(train_ratio * num_samples)
-    val_end = train_end + int(val_ratio * num_samples)
+    train_end_X = int(train_ratio * num_samples_X)
+    train_end_y = int(train_ratio * num_samples_y)
+    val_end_X = train_end_X + int(val_ratio * num_samples_X)
+    val_end_y = train_end_y + int(val_ratio * num_samples_y)
 
     return SplitDataset(
-        train_X=X[:train_end],
-        val_X=X[train_end:val_end],
-        test_X=X[val_end:],
-        train_y=y[:train_end],
-        val_y=y[train_end:val_end],
-        test_y=y[val_end:]
+        train_X=X[:train_end_X],
+        val_X=X[train_end_X:val_end_X],
+        test_X=X[val_end_X:],
+        train_y=y[:train_end_y],
+        val_y=y[train_end_y:val_end_y],
+        test_y=y[val_end_y:]
     )
 
 def open_pickle(pth):
