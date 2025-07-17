@@ -149,30 +149,31 @@ class ShallowHubert(nn.Module):
         return self.layer_norm(x)
 
 
-class ECoG_HuBERT_classifier(nn.Module):
+class ECoGHuBERT_classifier(nn.Module):
     def __init__(
         self,
         n_electrodes,
         speech_upstream=CONFIG['model']['base_model'],
         sylber_ckpt=CONFIG['model']['sylber_checkpoint'],
         hidden_dim=768,
-        output_dim=11, # for classification or n_electrodes for next frame pred
         max_frames=16000,
+        dropout=0.5,
     ):
         super().__init__()
 
         self.frontend = ECoGFrontend(
             n_electrodes=n_electrodes,
             hidden_dim=hidden_dim,
-            dropout_p=0.5
+            dropout_p=dropout
         )
         # Positional embeddings
         self.pos_emb = nn.Parameter(torch.zeros(1, max_frames, hidden_dim))
 
         # Shallow transformer to map ECoG → speech model hidden space
-        self.shallow = ShallowHubert()
+        self.shallow = ShallowHubert(dropout=dropout)
         
-        self.classifier = nn.Linear(hidden_dim, output_dim)
+        self.classifier = nn.Linear(hidden_dim, 1)
+        self.activation = nn.Sigmoid()
 
     def forward(self, x, attention_mask=None):  # x: [B, T, electrodes]
         assert x.shape[1] == 500, "Input must have precisely 500 samples"
@@ -180,8 +181,10 @@ class ECoG_HuBERT_classifier(nn.Module):
         x = x + self.pos_emb[:, :x.size(1), :]
 
         x = self.shallow(x, attention_mask=attention_mask)
-        
-        #x = self.classifier(x)
+
+        x = self.classifier(x)  # [B, T, 1]
+        x = self.activation(x)  # [B, T, 1]
+        x = x.squeeze(-1)       # [B, T] 
         return x
 
 
@@ -320,19 +323,20 @@ def train_model(model,
                 loss_fn1, 
                 loss_fn2, # set to null function if none
                 alpha_schedule,
-                chunk_len=500,
+                chunk_len=500, # leave as is unless you know what youre doing
                 n_epochs=128,
-                batch_size=16,
-                lr=1e-3,
+                batch_size=32,
+                lr=1e-4,
                 max_plateau=100,
                 save_path="models",
+                model_id="unknown",
                 loss_plot_path="loss_curve.png"):
     # check save path
     os.makedirs(save_path, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
+    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=8)
 
     # CHUNK DATA
     stride = chunk_len // 2
@@ -374,7 +378,7 @@ def train_model(model,
         model.eval()
         val_total_loss = 0
         with torch.no_grad():
-            for batch_X, batch_y in tqdm(val_loader, desc="Validation", leave=False):
+            for batch_X, batch_y in tqdm(val_loader, desc="Validation", leave=False, disable=True):
                 batch_X, batch_y = batch_X.to(device), batch_y.to(device)
                 output = model(batch_X)
                 val_loss = combined_loss(output, batch_y, loss_fn1, loss_fn2, alpha)
@@ -382,13 +386,13 @@ def train_model(model,
         avg_val_loss = val_total_loss / len(val_loader)
         val_losses.append(avg_val_loss)
 
-        print(f"Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+        print(f"Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}\n")
         scheduler.step(avg_val_loss)
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             plateau_counter = 0
-            model_path = os.path.join(save_path, "best_model.pt")
+            model_path = os.path.join(save_path, model_id + "_best.pt")
             torch.save(model.state_dict(), model_path)
         else:
             plateau_counter += 1
@@ -400,6 +404,9 @@ def train_model(model,
         torch.cuda.empty_cache()
 
     print(f"Best model saved to {model_path}")
+    model_path = os.path.join(save_path, model_id + "_last.pt")
+    torch.save(model.state_dict(), model_path)
+    print(f"Last model saved to {model_path}")
 
     # Return model and test data (unchunked)
     test_X = torch.tensor(dataset.test_X).float()

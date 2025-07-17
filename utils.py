@@ -4,6 +4,7 @@ import pickle
 import numpy as np
 import mne
 import yaml
+import pandas as pd
 
 with open("config.yaml", "r") as f:
     CONFIG = yaml.safe_load(f)
@@ -55,6 +56,19 @@ class SplitDataset:
             'test_y': self.test_y.shape
         }
 
+    def __add__(self, other):
+        if not isinstance(other, SplitDataset):
+            raise TypeError("Can only add SplitDataset to SplitDataset")
+        
+        return SplitDataset(
+            train_X=np.concatenate([self.train_X, other.train_X], axis=0),
+            val_X=np.concatenate([self.val_X, other.val_X], axis=0),
+            test_X=np.concatenate([self.test_X, other.test_X], axis=0),
+            train_y=np.concatenate([self.train_y, other.train_y], axis=0),
+            val_y=np.concatenate([self.val_y, other.val_y], axis=0),
+            test_y=np.concatenate([self.test_y, other.test_y], axis=0),
+        )
+
 
 def stepwise_resample(data, target_len):
     idx = np.floor(np.linspace(0, data.shape[0], target_len, endpoint=False)).astype(int)
@@ -99,11 +113,12 @@ def split_data(sub_num,
         raw = mne.io.read_raw_fif(sub.clean_path)
 
     X = raw.get_data().T
+    print(f'Reading raw file of size {X.shape}')
 
     if match_X:
-        y = match_x_func(y, num_samples)
+        y = match_x_func(y, num_samples_X)
     elif match_y:
-        X = match_y_func(X, num_samples)
+        X = match_y_func(X, num_samples_y)
 
     num_samples_X = X.shape[0]
     num_samples_y = y.shape[0]
@@ -123,7 +138,28 @@ def split_data(sub_num,
         test_y=y[val_end_y:]
     )
 
+
 def open_pickle(pth):
     with open(pth, 'rb') as handle:
         b = pickle.load(handle)
     return b
+
+
+def tsv_to_VAD(tsv_path, sr=50, total_duration=1800.0):
+    '''
+    Outputs a binary array of the total duration (30mins in 
+    our case dor the podcast dataset), at the given sampling
+    rate.
+    '''
+    samples_len = int(total_duration * sr)
+    df = pd.read_csv(tsv_path, sep="\t")
+    sample_rate = samples_len / total_duration
+    vad = np.zeros(samples_len, dtype=np.uint8)
+    for _, row in df.iterrows():
+        start_sample = int(row['start'] * sample_rate)
+        end_sample = int(row['end'] * sample_rate)
+        start_sample = max(0, start_sample)
+        end_sample = min(samples_len, end_sample)
+        vad[start_sample:end_sample] = 1
+
+    return vad
