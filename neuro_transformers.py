@@ -192,7 +192,7 @@ class ECoGHuBERT(nn.Module):
     def __init__(
         self,
         n_electrodes,
-        speech_upstream=CONFIG['model']['base_model'],
+        speech_upstream=CONFIG['model']['hubert_base_model'],
         sylber_ckpt=CONFIG['model']['sylber_checkpoint'],
         hidden_dim=768,
         output_size=768,
@@ -205,7 +205,7 @@ class ECoGHuBERT(nn.Module):
         self.frontend = ECoGFrontend(
             n_electrodes=n_electrodes,
             hidden_dim=hidden_dim,
-            dropout_p=0.5
+            dropout_p=0.3
         )
 
         # Detect whether model is HuBERT or wav2vec2
@@ -442,25 +442,16 @@ def inference(model: ECoGHuBERT, test_X, test_y, chunk_len=500, batch_size=8):
     return preds
 
 
-def save_predictions(predictions, targets, output_folder, train_ratio, n_epochs,
-                     chunk_len=None, loss_type=None, out_dir="transformer_outputs"):
+def save_predictions(predictions,
+                     targets,
+                     model_id,
+                     out_dir="transformer_outputs"):
     save_path = os.path.join(out_dir, output_folder)
     os.makedirs(save_path, exist_ok=True)
 
-    # Build filename suffix
-    name_parts = [
-        f"r{train_ratio}",
-        f"e{n_epochs}"
-    ]
-    if chunk_len is not None:
-        name_parts.append(f"chunk{chunk_len}")
-    if loss_type is not None:
-        name_parts.append(f"loss-{loss_type.replace('>', '2').replace(':', '-')}")
-    suffix = "_".join(name_parts)
-
     # Save files
-    preds_fname = f"predictions_{suffix}.npy"
-    gt_fname = f"ground_truth_{suffix}.npy"
+    preds_fname = f"predictions_{model_id}.npy"
+    gt_fname = f"ground_truth_{model_id}.npy"
 
     np.save(os.path.join(save_path, preds_fname), predictions)
     np.save(os.path.join(save_path, gt_fname), targets)
