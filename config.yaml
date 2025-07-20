@@ -1,9 +1,10 @@
 data:
   dataset_dir: "ds005574-1.0.2"
+  podcast_audio: "./pickled_podcast/samples/podcast_resampled.wav"
 
 model:
   sylber_dir: "../sylber"
   sylber_checkpoint: "../sylber/weights/sylber.ckpt"
-  hubet_base_model: "facebook/hubert-base-ls960"
+  hubert_base_model: "facebook/hubert-base-ls960"
   wav2vec_base_model: "facebook/wav2vec2-base"
   sylber_outputs: "./pickled_podcast/outputs.pkl"

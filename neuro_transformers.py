@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -125,7 +126,7 @@ class ECoGFrontend(nn.Module):
 
 
 class ShallowHubert(nn.Module):
-    def __init__(self, hidden_dim=768, num_layers=2, n_heads=12, dropout=0.5):
+    def __init__(self, hidden_dim=768, num_layers=1, n_heads=12, dropout=0.5):
         super().__init__()
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
@@ -153,7 +154,7 @@ class ECoGHuBERT_classifier(nn.Module):
     def __init__(
         self,
         n_electrodes,
-        speech_upstream=CONFIG['model']['base_model'],
+        speech_upstream=CONFIG['model']['hubert_base_model'],
         sylber_ckpt=CONFIG['model']['sylber_checkpoint'],
         hidden_dim=768,
         max_frames=16000,
@@ -197,8 +198,8 @@ class ECoGHuBERT(nn.Module):
         hidden_dim=768,
         output_size=768,
         max_frames=16000,
-        pretrained_layer_indices=[-1],  # which pretrained layers to keep
-        freeze=[-1],                    # which to freeze
+        pretrained_layer_indices=[-1, -2],  # which pretrained layers to keep
+        freeze=[],                    # which to freeze
     ):
         super().__init__()
 
@@ -424,7 +425,7 @@ def inference(model: ECoGHuBERT, test_X, test_y, chunk_len=500, batch_size=8):
     '''
     device = next(model.parameters()).device
     # MAKE SURE THERE IS NO OVERLAP IN CHUNKING
-    test_X_chunks, test_y_chunks = chunk_data(test_X, test_y, chunk_len, stride=chunk_len)
+    test_X_chunks, test_y_chunks = chunk_data(test_X, test_y, chunk_len, stride_X=chunk_len)
 
     preds = []
     model.eval()
@@ -446,7 +447,7 @@ def save_predictions(predictions,
                      targets,
                      model_id,
                      out_dir="transformer_outputs"):
-    save_path = os.path.join(out_dir, output_folder)
+    save_path = os.path.join(out_dir, out_dir)
     os.makedirs(save_path, exist_ok=True)
 
     # Save files
@@ -456,8 +457,8 @@ def save_predictions(predictions,
     np.save(os.path.join(save_path, preds_fname), predictions)
     np.save(os.path.join(save_path, gt_fname), targets)
 
-    print(f"Saved predictions to: {os.path.join(output_folder, preds_fname)}")
-    print(f"Saved ground truth to: {os.path.join(output_folder, gt_fname)}")
+    print(f"Saved predictions to: {os.path.join(out_dir, preds_fname)}")
+    print(f"Saved ground truth to: {os.path.join(out_dir, gt_fname)}")
 
 
 if __name__ == "__main__":
