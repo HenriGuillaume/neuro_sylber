@@ -6,6 +6,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from transformers import HubertModel, Wav2Vec2Model, HubertConfig, Wav2Vec2Config
 from utils import CONFIG, SplitDataset, split_data, open_pickle
 import os
+import re
 from matplotlib import pyplot as plt
 from tqdm import tqdm
 
@@ -447,7 +448,10 @@ def save_predictions(predictions,
                      targets,
                      model_id,
                      out_dir="transformer_outputs"):
-    save_path = os.path.join(out_dir, out_dir)
+    sub_name = re.search(r'_((sub\d{2}))_', model_id)
+    if not sub_name:
+        sub_name = 'unknown'
+    save_path = os.path.join(out_dir, sub_name)
     os.makedirs(save_path, exist_ok=True)
 
     # Save files
