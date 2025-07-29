@@ -1,11 +1,21 @@
 data:
   dataset_dir: "ds005574-1.0.2"
-  podcast_audio: "./pickled_podcast/samples/podcast_resampled.wav"
+  podcast_audio: "pickled_podcast/samples/podcast_resampled.wav"
 
 model:
-  sylber_dir: "../sylber"
-  sylber_checkpoint: "../sylber/weights/sylber.ckpt"
+  sylber:
+    dir: "../sylber"
+    checkpoint: "../sylber/weights/sylber.ckpt"
+    outputs: "pickled_podcast/outputs.pkl"
   hubert_base_model: "facebook/hubert-base-ls960"
   wav2vec_base_model: "facebook/wav2vec2-base"
-  sylber_outputs: "./pickled_podcast/outputs.pkl"
-  wav2vec_outputs: "./pickled_podcast/wav2vec_hidden6.pkl"
+  wav2vec_outputs: "pickled_podcast/wav2vec_hidden6.pkl"
+
+outputs:
+  transformer:
+    weights: "outputs/transformer/transformer_weights"
+    outputs_dir: "outputs/transformer/transformer_outputs"
+  TRF:
+    weights: "outputs/TRF/TRF_weights"
+    outputs_dir: "outputs/TRF/TRF_outputs"
+

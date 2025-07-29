@@ -8,7 +8,7 @@ from utils import CONFIG, Subject, SplitDataset, split_data, tsv_to_VAD
 from pathlib import Path
 
 
-SYLBER_FEAT_DIR = CONFIG['model']['sylber_outputs']
+SYLBER_FEAT_DIR = CONFIG['model']['sylber']['outputs']
 full_sylber_features = open_pickle(SYLBER_FEAT_DIR)
 
 SYLBER_HIDDEN_STATES = full_sylber_features['hidden_states']
@@ -16,8 +16,6 @@ del full_sylber_features
 
 WAV2VEC_FEAT_DIR = CONFIG['model']['wav2vec_outputs']
 WAV2VEC_HIDDEN_STATES = np.load(WAV2VEC_FEAT_DIR)
-
-output_folder = "transformer_outputs"
 
 
 def generate_wav2vec_hidden(wav_pth=CONFIG['data']['podcast_audio'], end_layer=6, chunk_sec=10):
@@ -123,7 +121,7 @@ def train_sylber_pred(sub_num,
                                         max_plateau=32,
                                         model_id = model_id)
     preds = inference(model, test_X, test_y)
-    save_predictions(preds, test_y, model_id)
+    save_predictions(preds, None, model_id)
     return model
 
 if __name__ == "__main__":

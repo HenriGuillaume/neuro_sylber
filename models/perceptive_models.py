@@ -9,17 +9,17 @@ import os
 import re
 import pickle
 from tqdm import tqdm
-from utils import Subject, SplitDataset, split_data, open_pickle, CONFIG
+from utils import Subject, SplitDataset, split_data, open_pickle, CONFIG, save_predictions
 
 # ECoG dataset
 DS_DIR = CONFIG['data']['dataset_dir']
 ECOGPREP_DIR = os.path.join(DS_DIR, 'derivatives/ecogprep/')
 ECOGGQC_DIR = os.path.join(DS_DIR, 'derivatives/ecogqc/')
 SUB_NAMES = [f'sub-0{i}' for i in range(10)]
-WEIGHTS_DIR = './weights'
+WEIGHTS_DIR = CONFIG['outpus']['TRF']['weights']
 
 # sylber features of the podcast
-SYLBER_FEAT_DIR = CONFIG['model']['sylber_outputs']
+SYLBER_FEAT_DIR = CONFIG['model']['sylber']['outputs']
 full_sylber_features = open_pickle(SYLBER_FEAT_DIR)
 
 HIDDEN_STATES = full_sylber_features['hidden_states']
@@ -99,28 +99,6 @@ def cross_validate_alpha(X, y, alphas, tmin, tmax, sfreq, n_splits=5):
     return best_alpha, all_scores
 
 
-def save_outputs(preds, scores, filename, out_dir="TRF_outputs"):
-    match = re.search(r'((sub\d{2}))_', filename)
-    if not match:
-        sub_name = 'unknown'
-    else:
-        sub_name = match.group(1)
-    save_path = os.path.join(out_dir, sub_name)
-    os.makedirs(save_path, exist_ok=True)
-
-    # Save scores
-    if scores is not None:
-        print(f"Average score: {np.mean(scores):.4f}")
-        scores_fname = filename + '_scores.pickle'
-        np.save(os.path.join(save_path, scores_fname), scores)
-        print(f"Saved scores to: {os.path.join(sub_folder, scores_fname)}")
-
-    # Save predictions and targets
-    preds_fname = filename + '_preds.pickle'
-    np.save(os.path.join(save_path, preds_fname), preds)
-    print(f"Saved predictions to: {os.path.join(save_path, preds_fname)}")
-
-
 def run_TRF_pipeline(sub_num,
                 hidden_states,
                 train_ratio=0.5,
@@ -164,14 +142,14 @@ def run_TRF_pipeline(sub_num,
         return
 
     
-    filename = f'sub{sub_num:02d}_task{task}_mode{mode}_r{train_ratio}_min{tmin}_max{tmax}_f{sfreq}_a{best_alpha:.2e}.pickle'
+    filename = f'sub{sub_num:02d}_TRF_task{task}_mode{mode}_r{train_ratio}_min{tmin}_max{tmax}_f{sfreq}_a{best_alpha:.2e}.pickle'
     #trf_model.save(filename)
     if task == 'decode':
         preds = trf_model.predict(dataset.test_X)
     else:
         preds = trf_model.predict(dataset.test_y)
 
-    save_outputs(preds, scores=None, filename=filename)
+    save_predictions(preds, scores=None, filename=filename)
 
     return trf_model, dataset
 

@@ -5,12 +5,11 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from transformers import HubertModel, Wav2Vec2Model, HubertConfig, Wav2Vec2Config
-from utils import CONFIG, SplitDataset, split_data, open_pickle
+from utils.data_utils import CONFIG, SplitDataset, split_data, open_pickle, save_predictions
 import os
 import re
 from matplotlib import pyplot as plt
 from tqdm import tqdm
-
 
 
 class BinnedECoGFrontend(nn.Module):
@@ -157,7 +156,7 @@ class ECoGHuBERT_classifier(nn.Module):
         self,
         n_electrodes,
         speech_upstream=CONFIG['model']['hubert_base_model'],
-        sylber_ckpt=CONFIG['model']['sylber_checkpoint'],
+        sylber_ckpt=CONFIG['model']['sylber']['checkpoint'],
         hidden_dim=768,
         max_frames=16000,
         dropout=0.5,
@@ -196,7 +195,7 @@ class ECoGHuBERT(nn.Module):
         self,
         n_electrodes,
         speech_upstream=CONFIG['model']['hubert_base_model'],
-        sylber_ckpt=CONFIG['model']['sylber_checkpoint'],
+        sylber_ckpt=CONFIG['model']['sylber']['checkpoint'],
         hidden_dim=768,
         output_size=768,
         max_frames=16000,
@@ -448,29 +447,6 @@ def inference(model: ECoGHuBERT, test_X, test_y, chunk_len=500, batch_size=8):
     preds = torch.cat(preds, dim=0)  # [num_chunks, chunk_len, output_dim]
     preds = preds.reshape(-1, preds.shape[-1])
     return preds
-
-
-def save_predictions(predictions,
-                     targets, # set to None to avoid saving same gt everytime
-                     model_id,
-                     out_dir="transformer_outputs"):
-    match = re.search(r'_((sub\d{2}))_', model_id)
-    if not match:
-        sub_name = 'unknown'
-    else:
-        sub_name = match.group(1)
-    save_path = os.path.join(out_dir, sub_name)
-    os.makedirs(save_path, exist_ok=True)
-
-    # Save files
-    preds_fname = f"predictions_{model_id}.npy"
-    gt_fname = f"ground_truth_{model_id}.npy"
-
-    np.save(os.path.join(save_path, preds_fname), predictions)
-    print(f"Saved predictions to: {os.path.join(out_dir, preds_fname)}")
-    if targets is not None:
-        np.save(os.path.join(save_path, gt_fname), targets)
-        print(f"Saved ground truth to: {os.path.join(out_dir, gt_fname)}")
 
 
 if __name__ == "__main__":

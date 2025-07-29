@@ -166,3 +166,32 @@ def tsv_to_VAD(tsv_path, sr=50, total_duration=1800.0):
         vad[start_sample:end_sample] = 1
 
     return vad
+
+
+def save_predictions(predictions,
+                     targets, # set to None to avoid saving same gt everytime
+                     model_id,
+                     out_dir=CONFIG['outputs']):
+    sub_match = re.search(r'(sub\d{2})', model_id)
+    if not sub_match:
+        sub_name = 'unknown'
+    else:
+        sub_name = sub_match.group(1)
+    model_match = re.search(r'TRF', model_id)
+    if not model_match:
+        model_name = 'transformer'
+    else:
+        model_name= 'TRF'
+    save_path = os.path.join(out_dir, model_name, sub_name)
+    os.makedirs(save_path, exist_ok=True)
+
+    # Save files
+    preds_fname = f"predictions_{model_id}.npy"
+    gt_fname = f"ground_truth_{model_id}.npy"
+
+    np.save(os.path.join(save_path, preds_fname), predictions)
+    print(f"Saved predictions to: {os.path.join(out_dir, preds_fname)}")
+    if targets is not None:
+        np.save(os.path.join(save_path, gt_fname), targets)
+        print(f"Saved ground truth to: {os.path.join(out_dir, gt_fname)}")
+
