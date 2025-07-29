@@ -25,13 +25,13 @@ class Subject:
         self.sub_name = f'sub-0{sub_num}'
         # BRAIN DATA
         # high gamma features
-        hg_suffix = '_task-podcast_desc-highgamma_ieeg.fif'
-        self.hg_path = os.path.join(ecogprep_dir, self.sub_name, 
-        'ieeg', self.sub_name + hg_suffix)
-        # cleaned data, not HG extraction
-        clean_suffix = '_task-podcast_ieeg.fif'
-        self.clean_path = os.path.join(ecogprep_dir, self.sub_name, 
-        'ieeg', self.sub_name + clean_suffix)
+        self.paths = {
+            mode:os.path.join(ecogprep_dir, self.sub_name, 'ieeg',
+                    self.sub_name + '_task-podcast_desc-' + mode + '_ieeg.fif')
+            for mode in ('alpha', 'gamma', 'theta', 'beta', 'highgamma')
+        }
+        self.paths['clean'] = os.path.join(ecogprep_dir ,self.sub_name, 'ieeg', 
+                                      self.sub_name + '_task-podcast_ieeg.fif')
         # info about electrodes
         self.channels_log = os.path.join(ecogqc_dir, self.sub_name, 
         'mark_channels.log')
@@ -107,23 +107,26 @@ def split_data(sub_num,
     or the inverse, then split according to ratio
     '''
     sub = Subject(sub_num) # maybe put this as a getter of Subject class
-    if mode == 'hg':
-        raw = mne.io.read_raw_fif(sub.hg_path)
-    else:
-        raw = mne.io.read_raw_fif(sub.clean_path)
+    raw = mne.io.read_raw_fif(sub.paths[mode])
 
     X = raw.get_data().T
     print(f'Reading raw file of size {X.shape}')
 
-    if match_X:
-        y = match_x_func(y, num_samples_X)
-    elif match_y:
-        X = match_y_func(X, num_samples_y)
-
     num_samples_X = X.shape[0]
     num_samples_y = y.shape[0]
+    min_num_samples = min(num_samples_X, num_samples_y)
+    if match_X:
+        y = match_x_func(y, num_samples_X)
+        y = y[:min_num_samples]
+        X = X[:min_num_samples]
+    elif match_y:
+        X = match_y_func(X, num_samples_y)
+        y = y[:min_num_samples]
+        X = X[:min_num_samples]
 
     # Compute split indices
+    num_samples_X = X.shape[0] # they may have changed
+    num_samples_y = y.shape[0]
     train_end_X = int(train_ratio * num_samples_X)
     train_end_y = int(train_ratio * num_samples_y)
     val_end_X = train_end_X + int(val_ratio * num_samples_X)

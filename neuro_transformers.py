@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from transformers import HubertModel, Wav2Vec2Model, HubertConfig, Wav2Vec2Config
@@ -302,6 +303,8 @@ def chunk_data(X, y, chunk_len_X=500, chunk_len_y=50, x_rate=512, y_rate=50, str
 
 #---------------LOSSES------------------#
 def dot_product_loss(y_pred, y_true):
+    # BEWARE, THIS IS A TERRIBLE LOSS, YOU
+    # CAN CHEAT IT BY OUTPUTING LARGE VECTORS
     # Ensure batch dimension is first: [B, D]
     dot = torch.sum(y_pred * y_true, dim=-1)
     loss = -dot
@@ -338,7 +341,7 @@ def train_model(model,
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=8)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=16)
 
     # CHUNK DATA
     stride = chunk_len // 2
@@ -361,12 +364,12 @@ def train_model(model,
     
     alpha = alpha_schedule[0]
     for epoch in range(n_epochs):
-        print(f"Epoch {epoch+1}/{n_epochs}")
+        print(f"Epoch {epoch+1}/{n_epochs}", flush=True)
         model.train()
         total_loss = 0
         alpha = alpha_schedule.get(epoch, alpha)
 
-        for batch_X, batch_y in tqdm(train_loader, desc=f"Training Epoch {epoch+1}", leave=False):
+        for batch_X, batch_y in train_loader:
             batch_X, batch_y = batch_X.to(device), batch_y.to(device)
             optimizer.zero_grad()
             output = model(batch_X)
@@ -380,7 +383,7 @@ def train_model(model,
         model.eval()
         val_total_loss = 0
         with torch.no_grad():
-            for batch_X, batch_y in tqdm(val_loader, desc="Validation", leave=False, disable=True):
+            for batch_X, batch_y in val_loader:
                 batch_X, batch_y = batch_X.to(device), batch_y.to(device)
                 output = model(batch_X)
                 val_loss = combined_loss(output, batch_y, loss_fn1, loss_fn2, alpha)
@@ -404,15 +407,18 @@ def train_model(model,
             break
 
         torch.cuda.empty_cache()
-
+    print('Report')
     print(f"Best model saved to {model_path}")
-    model_path = os.path.join(save_path, model_id + "_last.pt")
-    torch.save(model.state_dict(), model_path)
-    print(f"Last model saved to {model_path}")
+    print(f"End train Loss: {avg_train_loss:.4f} | End val Loss: {avg_val_loss:.4f} | Best val loss {best_val_loss:.4f}\n")
+    #model_path = os.path.join(save_path, model_id + "_last.pt")
+    #torch.save(model.state_dict(), model_path)
+    #print(f"Last model saved to {model_path}")
 
     # Return model and test data (unchunked)
     test_X = torch.tensor(dataset.test_X).float()
     test_y = torch.tensor(dataset.test_y).float()
+    # return best model
+    model.load_state_dict(torch.load(model_path))
     return model, (test_X, test_y)
 
 
@@ -445,12 +451,14 @@ def inference(model: ECoGHuBERT, test_X, test_y, chunk_len=500, batch_size=8):
 
 
 def save_predictions(predictions,
-                     targets,
+                     targets, # set to None to avoid saving same gt everytime
                      model_id,
                      out_dir="transformer_outputs"):
-    sub_name = re.search(r'_((sub\d{2}))_', model_id)
-    if not sub_name:
+    match = re.search(r'_((sub\d{2}))_', model_id)
+    if not match:
         sub_name = 'unknown'
+    else:
+        sub_name = match.group(1)
     save_path = os.path.join(out_dir, sub_name)
     os.makedirs(save_path, exist_ok=True)
 
@@ -459,10 +467,10 @@ def save_predictions(predictions,
     gt_fname = f"ground_truth_{model_id}.npy"
 
     np.save(os.path.join(save_path, preds_fname), predictions)
-    np.save(os.path.join(save_path, gt_fname), targets)
-
     print(f"Saved predictions to: {os.path.join(out_dir, preds_fname)}")
-    print(f"Saved ground truth to: {os.path.join(out_dir, gt_fname)}")
+    if targets is not None:
+        np.save(os.path.join(save_path, gt_fname), targets)
+        print(f"Saved ground truth to: {os.path.join(out_dir, gt_fname)}")
 
 
 if __name__ == "__main__":
