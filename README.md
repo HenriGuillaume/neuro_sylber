@@ -13,14 +13,19 @@ We make use of the openly available ["Podcast" ECoG dataset](https://www.nature.
 If you are reading this and have things to share (positive or negative), feel free to contact me.
 
 - The dataset is freely available on [OpenNeuro](https://openneuro.org/datasets/ds005574/versions/1.0.2), you can download it from there or use the `ds005574-1.0.2.sh` bash script (don't forget to `chmod + x`).
-- The Sylber model and related utilities can be downloaded via *pip*, though I suggest cloning the [repo](https://github.com/Berkeley-Speech-Group/sylber/). Note that it's requirements may not work for `Python > 3.11`
+- The Sylber model and related utilities can be downloaded via *pip*, though i suggest cloning the [repo](https://github.com/berkeley-speech-group/sylber/). Note that it's requirements may not work for `python > 3.11`
 
-You can then run Sylber on the audio stimulus from the dataset (don't forget to convert it to mono). The sylber output dict must be saved in a `.pickle` file. You should then be able to provide the required paths in `config.yaml` and run the different scripts. 
+You can then run sylber on the audio stimulus from the dataset (don't forget to convert it to mono). the sylber output dict must be saved in a `.pickle` file. You should then be able to provide the required paths in `config.yaml` and run the different scripts. 
 
 
-# TO-DO:
+# to-do:
 - code refactoring
 - hyperparameter tuning / testing model architectures
 - data augmentation
 - testing features other than high-gamma binned activations (notably beta features)
-- test on a Spoken Dataset?
+- test on a spoken dataset?
+
+Another idea I had is the following:
+Instead of predicting just the last activations that directly represent syllables, we can take advantage of the hierarchical structure of the model, and try to predict syllables from neural-decoded earlier activations, that may represent other info that can be extracted from the neural signal (thus maybe leveraging similar hierarchical structure in the brain).
+
+![Demo screenshot](assets/model_merging.png)
