@@ -5,14 +5,22 @@ import numpy as np
 import mne
 import yaml
 import pandas as pd
+import h5py
 
-with open("config.yaml", "r") as f:
+with open("../config.yaml", "r") as f:
     CONFIG = yaml.safe_load(f)
 
 
-DS_DIR = CONFIG['data']['dataset_dir']
+DS_DIR = '../' + CONFIG['data']['dataset_dir']
 ECOGPREP_DIR = os.path.join(DS_DIR, 'derivatives/ecogprep/')
 ECOGGQC_DIR = os.path.join(DS_DIR, 'derivatives/ecogqc/')
+SYLBER_OUTPUTS = CONFIG['model']['sylber']['outputs']
+
+# reding h5 files
+def get_h5_layer(outputs_pth=SYLBER_OUTPUTS, layer_num=9):
+    with h5py.File(outputs_pth, "r") as h5f:
+        hidden_states = h5f["all_hidden_states"]
+        return hidden_states[:, layer_num, :][:]
 
 class Subject:
     def __init__(self, 

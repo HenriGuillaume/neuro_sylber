@@ -1,21 +1,13 @@
 import numpy as np
-from neuro_transformers import *
+from transformer_models import *
 import torch
 import torch.nn as nn
 import torchaudio
 import soundfile
-from utils import CONFIG, Subject, SplitDataset, split_data, tsv_to_VAD
+sys.path.append('../utils')
+from data_utils import CONFIG, get_h5_layer, Subject, SplitDataset, split_data, tsv_to_VAD
 from pathlib import Path
-
-
-SYLBER_FEAT_DIR = CONFIG['model']['sylber']['outputs']
-full_sylber_features = open_pickle(SYLBER_FEAT_DIR)
-
-SYLBER_HIDDEN_STATES = full_sylber_features['hidden_states']
-del full_sylber_features
-
-WAV2VEC_FEAT_DIR = CONFIG['model']['wav2vec_outputs']
-WAV2VEC_HIDDEN_STATES = np.load(WAV2VEC_FEAT_DIR)
+import os
 
 
 def generate_wav2vec_hidden(wav_pth=CONFIG['data']['podcast_audio'], end_layer=6, chunk_sec=10):
@@ -85,18 +77,18 @@ def VAD_ssl(sub_num,
 
 
 def train_sylber_pred(sub_num,
-                      hidden_states=SYLBER_HIDDEN_STATES,
+                      hidden_states,
                       base_model='hubert', # or 'wav2vec'
-                      mode='hg', # or 'clean'
+                      mode='clean', # or 'clean'
                       model=None,
-                      pretrained_shallow=None,
+                      pretrained_idx=[-1],
                       freeze=[],
                       train_ratio=0.8,
                       val_ratio=0.1,
-                      n_epochs=256,
+                      n_epochs=32,
                       loss_fn1=nn.MSELoss(),
                       loss_fn2=cossim_loss,
-                      schedule={0:0.2}
+                      schedule={0:1}
                       ):
     '''
     pretrained_shallow: path to pretrained weights for the shallow
@@ -112,22 +104,54 @@ def train_sylber_pred(sub_num,
                            speech_upstream=speech_upstream,
                            freeze=freeze)
     model_id = f'TOKPRED_base{base_model}_mod_{mode}_freeze{bool(freeze)}_sub0{sub_num}_T{int(train_ratio * 10):02}_V{int(val_ratio * 10):02}_ep{n_epochs}'
-    model, (test_X, test_y) = train_model(model,
-                                        dataset,
-                                        loss_fn1,
-                                        loss_fn2,
-                                        alpha_schedule=schedule,
-                                        n_epochs=n_epochs,
-                                        max_plateau=32,
-                                        model_id = model_id)
-    preds = inference(model, test_X, test_y)
-    save_predictions(preds, None, model_id)
-    return model
+    train_dict = train_model(model,
+                            dataset,
+                            loss_fn1,
+                            loss_fn2,
+                            alpha_schedule=schedule,
+                            n_epochs=n_epochs,
+                            max_plateau=32,
+                            model_id = model_id)
+    return train_dict
+
+
+#===============EXPERIMENTS=================#
+def test_depth():
+    '''
+    The goal is to evaluate the optimal depth for the transformer
+    stack to predict each layer.
+    '''
+    save_folder = '../depth_test'
+    os.makedirs(save_folder, exist_ok=True)
+    # subsample of layers we try to predict
+    target_layers = [4, 6, 9]
+    for layer_num in target_layers:
+        for depth in range(min(4, layer_num-1)):
+            for sub_num in range(1, 5):
+                pretrained = [layer_num-1-i for i in range(depth)]
+                train_dict = train_sylber_pred(
+                    sub_num,
+                    # output of layer layer_num-1
+                    get_h5_layer(layer_num=layer_num),
+                    train_ratio=0.8,
+                    val_ratio=0.1,
+                    n_epochs=20,
+                    pretrained_idx=pretrained
+                )
+                test_name = f'sub{sub_num}layer{layer_num}depth{depth}.npy' 
+                save_path = os.path.join(save_folder, test_name)
+                np.save(save_path, train_dict['val_losses'])
+                del train_dict
+
 
 if __name__ == "__main__":
     import sys
     # keep pretrained layers in mind across patients
-    #mode_list = ('alpha', 'gamma', 'theta', 'beta', 'highgamma') 
+    #mode_list = ('alpha', 'gamma', 'theta', 'beta', 'highgamma', 'clean') 
+    test_depth()
+
+
+    exit()
     sub_num = int(sys.argv[1])
     base_model = sys.argv[2] # 'wav2vec' or 'hubert'
     mode = sys.argv[3]

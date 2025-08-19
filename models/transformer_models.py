@@ -5,7 +5,9 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from transformers import HubertModel, Wav2Vec2Model, HubertConfig, Wav2Vec2Config
-from utils.data_utils import CONFIG, SplitDataset, split_data, open_pickle, save_predictions
+import sys
+sys.path.append('../utils')
+from data_utils import CONFIG, SplitDataset, split_data, open_pickle, save_predictions
 import os
 import re
 from matplotlib import pyplot as plt
@@ -246,15 +248,15 @@ class ECoGHuBERT(nn.Module):
         self.pos_emb = nn.Parameter(torch.zeros(1, max_frames, hidden_dim))
 
         # Shallow transformer to map ECoG → speech model hidden space
-        self.shallow = ShallowHubert()
+        self.shallow = None #ShallowHubert()
 
     def forward(self, x, attention_mask=None):  # x: [B, T, electrodes]
         assert x.shape[1] == 500, "Input must have precisely 500 samples"
 
         x = self.frontend(x)  # [B, T, hidden_dim]
         x = x + self.pos_emb[:, :x.size(1), :]
-
-        x = self.shallow(x, attention_mask=attention_mask)
+        if self.shallow:
+            x = self.shallow(x, attention_mask=attention_mask)
 
         for layer in self.truncated_encoder:
             x = layer(x, attention_mask=attention_mask)[0]
@@ -332,7 +334,7 @@ def train_model(model,
                 batch_size=32,
                 lr=1e-4,
                 max_plateau=100,
-                save_path="models",
+                save_path="weights",
                 model_id="unknown",
                 loss_plot_path="loss_curve.png"):
     # check save path
@@ -418,7 +420,11 @@ def train_model(model,
     test_y = torch.tensor(dataset.test_y).float()
     # return best model
     model.load_state_dict(torch.load(model_path))
-    return model, (test_X, test_y)
+    return {'model':model, 
+            'test_X':test_X,
+            'test_y':test_y,
+            'losses':losses,
+            'val_losses':val_losses}
 
 
 #------INFERENCE LOOPS-------------------------#

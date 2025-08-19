@@ -7,3 +7,6 @@ doodoo/
 transformer_outputs/
 report.md
 test.ipynb
+test2.ipynb
+pickle/
+depth_test/

@@ -4,9 +4,9 @@ data:
 
 model:
   sylber:
-    dir: "../sylber"
-    checkpoint: "../sylber/weights/sylber.ckpt"
-    outputs: "pickled_podcast/outputs.pkl"
+    dir: "../../sylber"
+    checkpoint: "../../sylber/weights/sylber.ckpt"
+    outputs: "../pickled_podcast/merged.h5"
   hubert_base_model: "facebook/hubert-base-ls960"
   wav2vec_base_model: "facebook/wav2vec2-base"
   wav2vec_outputs: "pickled_podcast/wav2vec_hidden6.pkl"

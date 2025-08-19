@@ -1,11 +1,18 @@
 import os
 import sys
 import pickle
+import yaml
 import numpy as np
-from sylber import Segmenter
 from pydub import AudioSegment
 import soundfile as sf
 from textgrid import TextGrid, IntervalTier
+import h5py
+
+with open("../config.yaml", "r") as f:
+    CONFIG = yaml.safe_load(f)
+
+sys.path.append('../' + CONFIG['model']['sylber']['dir'])
+from sylber import Segmenter
 
 def split_audio_by_timepoints(
     input_file, split_points, output_prefix='part', target_sr=16000
@@ -55,7 +62,7 @@ def run_sylber_on_file(filename):
     print(f"Processing {filename} ...")
 
     segmenter = Segmenter(model_ckpt="sylber", in_second=False)
-    outputs = segmenter(filename)
+    outputs = segmenter(filename, in_second=False)
 
     # Prepare output path
     base = os.path.splitext(os.path.basename(filename))[0]
@@ -69,34 +76,71 @@ def run_sylber_on_file(filename):
     return pickle_path
 
 
-def merge_sylber_dicts(pickle_paths, audio_part_paths, sample_rate=16000):
-    merged_segments = []
-    merged_features = []
-    merged_hidden = []
+def merge_sylber_dicts(pickle_paths, audio_part_paths, hdf5_path, audio_sr=16000):
+    """
+    Merge sylber dicts into a single HDF5 file.
+    Matches original reshape: (time, layers, hidden_dim).
+    """
+    # ===== PASS 1: find dimensions =====
+    total_time = 0
+    total_segments = 0
+    with open(pickle_paths[0], "rb") as f:
+        first_d = pickle.load(f)
+    
+    with open(pickle_paths[0], "rb") as f:
+        first_d = pickle.load(f)
 
-    offset = 0  # in samples
+    # all_hidden_states: (num_layers, time, hidden_dim)
+    num_layers, time_len, hidden_dim = first_d["all_hidden_states"].shape
+    feature_dim = first_d["segment_features"].shape[1]
 
-    for pickle_path, audio_path in zip(pickle_paths, audio_part_paths):
-        with open(pickle_path, 'rb') as f:
+    for pickle_path in pickle_paths:
+        with open(pickle_path, "rb") as f:
             d = pickle.load(f)
+        total_time += d["all_hidden_states"].shape[1]  # seq_len
+        total_segments += len(d["segments"])
 
-        # shift segments by current offset
-        seg = d['segments'] + offset
-        merged_segments.append(seg)
-        merged_features.append(d['segment_features'])
-        merged_hidden.append(d['hidden_states'])
+    # ===== Create HDF5 datasets =====
+    with h5py.File(hdf5_path, "w") as h5f:
+        dset_hidden = h5f.create_dataset(
+            "all_hidden_states",
+            shape=(total_time, num_layers, hidden_dim),
+            dtype="float32"
+        )
+        dset_segments = h5f.create_dataset(
+            "segments",
+            shape=(total_segments, 2),
+            dtype="int64"
+        )
+        dset_features = h5f.create_dataset(
+            "segment_features",
+            shape=(total_segments, feature_dim),
+            dtype="float32"
+        )
 
-        # update offset using number of samples in this audio part
-        num_samples = sf.info(audio_path).frames
-        offset += num_samples
+        # ===== PASS 2: write reshaped data bit-by-bit =====
+        time_offset = 0
+        seg_offset = 0
+        for pickle_path, audio_path in zip(pickle_paths, audio_part_paths):
+            with open(pickle_path, "rb") as f:
+                d = pickle.load(f)
 
-    merged = {
-        'segments': np.concatenate(merged_segments),
-        'segment_features': np.concatenate(merged_features),
-        'hidden_states': np.concatenate(merged_hidden),
-    }
+            seq_len = d["all_hidden_states"].shape[1]
+            seg_len = len(d["segments"])
 
-    return merged
+            # store segments and features
+            dset_segments[seg_offset:seg_offset+seg_len] = d["segments"] + time_offset
+            dset_features[seg_offset:seg_offset+seg_len] = d["segment_features"]
+
+            # write hidden states in (time, layer, hidden) order
+            for layer_idx, layer_data in enumerate(d["all_hidden_states"]):
+                dset_hidden[time_offset:time_offset+seq_len, layer_idx, :] = layer_data
+
+
+            time_offset += seq_len
+            seg_offset += seg_len
+
+    return hdf5_path
 
 
 def segments_to_textgrid(segments, output_path, sample_rate=16000, tier_name="segments"):
@@ -135,28 +179,14 @@ def segments_to_textgrid(segments, output_path, sample_rate=16000, tier_name="se
 if __name__ == "__main__":
     ## Split points chosen within silent intervals
     #split_points = ["00:05:00", "00:09:55", "00:15:28", "00:19:36", "00:25:22"]
-    #audio_file = "./samples/podcast.wav"
-
-    #print("Splitting audio...")
-    #part_files = split_audio_by_timepoints(audio_file, split_points)
-
-    #print("\nRunning Sylber on each part...")
-    #pickle_paths = [run_sylber_on_file(f) for f in part_files]
-
-    #print("\nMerging Sylber outputs...")
-    #merged_output = merge_sylber_dicts(pickle_paths, part_files)
-
-    ## Optional: save merged result
-    #with open("pickle/merged_output.pickle", "wb") as f:
-    #    pickle.dump(merged_output, f)
-
-    #print("Merged output saved to pickle/merged_output.pickle")
-
-    # save to TextGrid
-    with open("outputs.pkl", "rb") as f:
-        merged_output = pickle.load(f)
-
-    segments = merged_output['segments']
+    audio_files = []
+    audio_pth = '/home/bigh/prog/neuro_sylber/pickled_podcast/samples'
+    for i in os.listdir(audio_pth):
+        if os.path.isfile(os.path.join(audio_pth,i)) and 'podcast_nomusic_' in i:
+            audio_files.append(os.path.join(audio_pth, i))
+    audio_files.sort()
+    print(audio_files)
+    pickle_outputs = [run_sylber_on_file(f) for f in audio_files]
+    merged = merge_sylber_dicts(pickle_outputs, audio_files, 'pickle/merged.h5')
     
-    segments_to_textgrid(segments, "segments.TextGrid")
-
+    print(f'Merged and saved to {merged}')
